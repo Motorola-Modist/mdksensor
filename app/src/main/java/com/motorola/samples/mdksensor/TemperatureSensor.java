@@ -97,9 +97,9 @@ public class TemperatureSensor {
     };
 
     private void onModDevice(ModDevice device) {
+        Log.i(Constants.TAG, "onModDevice");
         if (listener != null)
             listener.onModDevice(device);
-        Log.i(Constants.TAG, "onModDevice");
     }
 
     /**
@@ -200,6 +200,7 @@ public class TemperatureSensor {
             /** The temperature */
             double temp = ((0 - 0.03) * data) + 128;
 
+            Log.i(Constants.TAG, "onTemperatureData. Temp.: " + temp);
             if (listener != null)
                 listener.onTemperatureData(temp);
         } else if (cmd == Constants.TEMP_RAW_COMMAND_CHALLENGE) {
@@ -258,9 +259,9 @@ public class TemperatureSensor {
     }
 
     private void onFirstResponse(boolean challengePassed) {
+        Log.i(Constants.TAG, "onFirstResponse. challengePassed: " + challengePassed);
         if (listener != null)
             listener.onFirstResponse(challengePassed);
-        Log.i(Constants.TAG, "onFirstResponse. challengePassed: " + challengePassed);
     }
 
     /*
@@ -269,8 +270,9 @@ public class TemperatureSensor {
      * permission every time perform an operation.
     */
     private void onRequestRawPermission() {
-        // requestPermissions(new String[]{ModManager.PERMISSION_USE_RAW_PROTOCOL}, RAW_PERMISSION_REQUEST_CODE);
-        throw new Error("Needs permission to connect to the raw data protocol");
+        Log.i(Constants.TAG, "onRequestRawPermission");
+        if (listener != null)
+            listener.onRequestRawPermission();
 
     }
 
