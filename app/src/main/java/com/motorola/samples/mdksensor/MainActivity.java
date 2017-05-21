@@ -1,7 +1,7 @@
 /**
  * Copyright (c) 2016 Motorola Mobility, LLC.
  * All rights reserved.
- *
+ * <p>
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
  * 1. Redistributions of source code must retain the above copyright notice,
@@ -12,7 +12,7 @@
  * 3. Neither the name of the copyright holder nor the names of its
  * contributors may be used to endorse or promote products derived from this
  * software without specific prior written permission.
- *
+ * <p>
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
  * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
@@ -36,8 +36,6 @@ import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.net.Uri;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Message;
 import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
@@ -55,8 +53,6 @@ import android.widget.Toolbar;
 import com.motorola.mod.ModDevice;
 import com.motorola.mod.ModManager;
 
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -70,15 +66,12 @@ import lecho.lib.hellocharts.view.LineChartView;
 /**
  * A class to represent main activity.
  */
-public class MainActivity extends Activity implements View.OnClickListener {
+public class MainActivity extends Activity implements View.OnClickListener, TemperatureSensorListener {
     public static final String MOD_UID = "mod_uid";
 
     private static final int RAW_PERMISSION_REQUEST_CODE = 100;
 
-    /**
-     * Instance of MDK Personality Card interface
-     */
-    private Personality personality;
+    private TemperatureSensor sensor;
 
     /**
      * Line chart to draw temperature values
@@ -89,39 +82,6 @@ public class MainActivity extends Activity implements View.OnClickListener {
     private LineChartView chart;
     private Viewport viewPort;
 
-    /** Handler for events from mod device */
-    private Handler handler = new Handler() {
-        public void handleMessage(Message msg) {
-            switch (msg.what) {
-                case Personality.MSG_MOD_DEVICE:
-                    /** Mod attach/detach */
-                    ModDevice device = personality.getModDevice();
-                    onModDevice(device);
-                    break;
-                case Personality.MSG_RAW_DATA:
-                    /** Mod raw data */
-                    byte[] buff = (byte[]) msg.obj;
-                    int length = msg.arg1;
-                    onRawData(buff, length);
-                    break;
-                case Personality.MSG_RAW_IO_READY:
-                    /** Mod RAW I/O ready to use */
-                    onRawInterfaceReady();
-                    break;
-                case Personality.MSG_RAW_IO_EXCEPTION:
-                    /** Mod RAW I/O exception */
-                    onIOException();
-                    break;
-                case Personality.MSG_RAW_REQUEST_PERMISSION:
-                    /** Request grant RAW_PROTOCOL permission */
-                    onRequestRawPermission();
-                default:
-                    Log.i(Constants.TAG, "MainActivity - Un-handle events: " + msg.what);
-                    break;
-            }
-        }
-    };
-
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -129,12 +89,12 @@ public class MainActivity extends Activity implements View.OnClickListener {
         Toolbar toolbar = (Toolbar) findViewById(R.id.toolbar);
         setActionBar(toolbar);
 
-        LinearLayout dipTitle = (LinearLayout)findViewById(R.id.layout_dip_description_title);
+        LinearLayout dipTitle = (LinearLayout) findViewById(R.id.layout_dip_description_title);
         dipTitle.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                LinearLayout dipDescription = (LinearLayout)findViewById(R.id.layout_dip_description);
-                ImageView imgExpand = (ImageView)findViewById(R.id.imageview_description_img);
+                LinearLayout dipDescription = (LinearLayout) findViewById(R.id.layout_dip_description);
+                ImageView imgExpand = (ImageView) findViewById(R.id.imageview_description_img);
 
                 if (dipDescription.getVisibility() == View.GONE) {
                     dipDescription.setVisibility(View.VISIBLE);
@@ -155,16 +115,18 @@ public class MainActivity extends Activity implements View.OnClickListener {
             switcher.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
                 @Override
                 public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
-                    if (null == personality || null == personality.getModDevice()) {
+                    ModDevice modDevice = sensor == null ? null : sensor.getModDevice();
+
+                    if (null == modDevice) {
                         Toast.makeText(MainActivity.this, getString(R.string.sensor_not_available),
                                 Toast.LENGTH_SHORT).show();
                         buttonView.setChecked(false);
                         return;
                     }
 
-                    if (personality.getModDevice() == null
-                            || personality.getModDevice().getVendorId() != Constants.VID_MDK
-                            || personality.getModDevice().getProductId() != Constants.PID_TEMPERATURE) {
+                    if (modDevice == null
+                            || modDevice.getVendorId() != Constants.VID_MDK
+                            || modDevice.getProductId() != Constants.PID_TEMPERATURE) {
                         Toast.makeText(MainActivity.this, getString(R.string.sensor_not_available),
                                 Toast.LENGTH_SHORT).show();
                         buttonView.setChecked(false);
@@ -174,10 +136,9 @@ public class MainActivity extends Activity implements View.OnClickListener {
                     /** Set interval spinner button status */
                     Spinner spinner = (Spinner) findViewById(R.id.sensor_interval);
                     if (spinner != null) {
-                        if (!isChecked && personality != null
-                                && personality.getModDevice() != null
-                                && personality.getModDevice().getVendorId() == Constants.VID_MDK
-                                && personality.getModDevice().getProductId() == Constants.PID_TEMPERATURE) {
+                        if (!isChecked && modDevice != null
+                                && modDevice.getVendorId() == Constants.VID_MDK
+                                && modDevice.getProductId() == Constants.PID_TEMPERATURE) {
                             spinner.setEnabled(true);
                         } else {
                             spinner.setEnabled(false);
@@ -188,16 +149,12 @@ public class MainActivity extends Activity implements View.OnClickListener {
                     if (isChecked) {
                         String[] values = getResources().getStringArray(R.array.sensor_interval_values);
                         int interval = Integer.valueOf(values[spinner.getSelectedItemPosition()]);
-                        byte intervalLow = (byte) (interval & 0x00FF);
-                        byte intervalHigh = (byte) (interval >> 8);
-                        byte[] cmd = {Constants.TEMP_RAW_COMMAND_ON, Constants.SENSOR_COMMAND_SIZE,
-                                intervalLow, intervalHigh};
-                        personality.getRaw().executeRaw(cmd);
+                        sensor.start(interval);
 
                         Toast.makeText(MainActivity.this, getString(R.string.sensor_start),
                                 Toast.LENGTH_SHORT).show();
                     } else {
-                        personality.getRaw().executeRaw(Constants.RAW_CMD_STOP);
+                        sensor.stop();
 
                         Toast.makeText(MainActivity.this, getString(R.string.sensor_stop),
                                 Toast.LENGTH_SHORT).show();
@@ -238,17 +195,17 @@ public class MainActivity extends Activity implements View.OnClickListener {
             chart.setLineChartData(data);
         }
 
-        TextView textView = (TextView)findViewById(R.id.mod_external_dev_portal);
+        TextView textView = (TextView) findViewById(R.id.mod_external_dev_portal);
         if (textView != null) {
             textView.setOnClickListener(this);
         }
 
-        textView = (TextView)findViewById(R.id.mod_source_code);
+        textView = (TextView) findViewById(R.id.mod_source_code);
         if (textView != null) {
             textView.setOnClickListener(this);
         }
 
-        Button button = (Button)findViewById(R.id.status_clear_history);
+        Button button = (Button) findViewById(R.id.status_clear_history);
         if (button != null) {
             button.setOnClickListener(this);
         }
@@ -258,7 +215,7 @@ public class MainActivity extends Activity implements View.OnClickListener {
     public void onDestroy() {
         super.onDestroy();
 
-        releasePersonality();
+        releaseSensor();
     }
 
     @Override
@@ -271,7 +228,7 @@ public class MainActivity extends Activity implements View.OnClickListener {
         super.onResume();
 
         /** Initial MDK Personality interface */
-        initPersonality();
+        initSensor();
 
         /** Restore temperature record status */
         Switch switcher = (Switch) findViewById(R.id.sensor_switch);
@@ -286,16 +243,19 @@ public class MainActivity extends Activity implements View.OnClickListener {
         super.onConfigurationChanged(newConfig);
     }
 
-    /** Initial MDK Personality interface */
-    private void initPersonality() {
-        if (null == personality) {
-            personality = new RawPersonality(this, Constants.VID_MDK, Constants.PID_TEMPERATURE);
-            personality.registerListener(handler);
+    /**
+     * Initial MDK Personality interface
+     */
+    private void initSensor() {
+        if (null == sensor) {
+            sensor = new TemperatureSensor(this, this);
         }
     }
 
-    /** Clean up MDK Personality interface */
-    private void releasePersonality() {
+    /**
+     * Clean up MDK Personality interface
+     */
+    private void releaseSensor() {
         /** Save currently temperature recording status */
         Switch switcher = (Switch) findViewById(R.id.sensor_switch);
         if (switcher.isChecked()) {
@@ -305,10 +265,9 @@ public class MainActivity extends Activity implements View.OnClickListener {
         preference.edit().putBoolean("recordingRaw", false).commit();
 
         /** Clean up MDK Personality interface */
-        if (null != personality) {
-            personality.getRaw().executeRaw(Constants.RAW_CMD_STOP);
-            personality.onDestroy();
-            personality = null;
+        if (null != sensor) {
+            sensor.release();
+            sensor = null;
         }
     }
 
@@ -328,11 +287,13 @@ public class MainActivity extends Activity implements View.OnClickListener {
         //noinspection SimplifiableIfStatement
         if (id == R.id.action_about) {
             /** Get UUID of this mod device */
+
+            ModDevice modDevice = sensor == null ? null : sensor.getModDevice();
+
             String uid = getString(R.string.na);
-            if (personality != null
-                    && personality.getModDevice() != null
-                    && personality.getModDevice().getUniqueId() != null) {
-                uid = personality.getModDevice().getUniqueId().toString();
+            if (modDevice != null
+                    && modDevice.getUniqueId() != null) {
+                uid = modDevice.getUniqueId().toString();
             }
 
             startActivity(new Intent(this, AboutActivity.class).putExtra(MOD_UID, uid));
@@ -346,7 +307,9 @@ public class MainActivity extends Activity implements View.OnClickListener {
         return super.onOptionsItemSelected(item);
     }
 
-    /** Button click event from UI */
+    /**
+     * Button click event from UI
+     */
     @Override
     public void onClick(View v) {
         if (v == null) {
@@ -377,7 +340,9 @@ public class MainActivity extends Activity implements View.OnClickListener {
         }
     }
 
-    /** Mod device attach/detach */
+    /**
+     * Mod device attach/detach
+     */
     public void onModDevice(ModDevice device) {
         /** Moto Mods Status */
         /**
@@ -446,12 +411,14 @@ public class MainActivity extends Activity implements View.OnClickListener {
          */
         TextView tvPackage = (TextView) findViewById(R.id.mod_status_package_name);
         if (null != tvPackage) {
+            ModManager modManager = sensor == null ? null : sensor.getModManager();
+
             if (device == null
-                    || personality.getModManager() == null) {
+                    || modManager == null) {
                 tvPackage.setText(getString(R.string.na));
             } else {
-                if (personality.getModManager() != null) {
-                    String modPackage = personality.getModManager().getDefaultModPackage(device);
+                if (modManager != null) {
+                    String modPackage = modManager.getDefaultModPackage(device);
                     if (null == modPackage || modPackage.isEmpty()) {
                         modPackage = getString(R.string.name_default);
                     }
@@ -463,7 +430,7 @@ public class MainActivity extends Activity implements View.OnClickListener {
         /**
          * Set Sensor Description text based on current state
          */
-        TextView tvSensor = (TextView)findViewById(R.id.sensor_text);
+        TextView tvSensor = (TextView) findViewById(R.id.sensor_text);
         if (tvSensor != null) {
             if (device == null) {
                 tvSensor.setText(R.string.attach_pcard);
@@ -503,7 +470,7 @@ public class MainActivity extends Activity implements View.OnClickListener {
          * of Constants.TEMP_RAW_COMMAND_CHLGE_RESP in parseResponse().
          */
         Spinner spinner = (Spinner) findViewById(R.id.sensor_interval);
-        if (spinner != null ) {
+        if (spinner != null) {
             spinner.setEnabled(false);
         }
 
@@ -513,59 +480,27 @@ public class MainActivity extends Activity implements View.OnClickListener {
          * of Constants.TEMP_RAW_COMMAND_CHLGE_RESP in parseResponse().
          */
         Button bClear = (Button) findViewById(R.id.status_clear_history);
-        if (bClear != null ) {
+        if (bClear != null) {
             bClear.setEnabled(false);
         }
     }
 
-    /** Check current mod whether in developer mode */
-    private boolean isMDKMod(ModDevice device) {
-        if (device == null) {
-            /** Mod is not available */
-            return false;
-        } else if (device.getVendorId() == Constants.VID_DEVELOPER
-                && device.getProductId() == Constants.PID_DEVELOPER) {
-            // MDK in developer mode
-            return true;
-        } else {
-            // Check MDK
-            return device.getVendorId() == Constants.VID_MDK;
-        }
-    }
-
-    /** Got data from mod device RAW I/O */
-    public void onRawData(byte[] buffer, int length) {
-        /** Parse raw data to header and payload */
-        int cmd = buffer[Constants.CMD_OFFSET] & ~Constants.TEMP_RAW_COMMAND_RESP_MASK & 0xFF;
-        int payloadLength = buffer[Constants.SIZE_OFFSET];
-
-        /** Checking the size of buffer we got to ensure sufficient bytes */
-        if (payloadLength + Constants.CMD_LENGTH + Constants.SIZE_LENGTH != length) {
-            return;
+    @Override
+    public void onFirstResponse(boolean challengePassed) {
+        Switch switcher = (Switch) findViewById(R.id.sensor_switch);
+        if (switcher != null) {
+            switcher.setEnabled(challengePassed);
         }
 
-        /** Parser payload data */
-        byte[] payload = new byte[payloadLength];
-        System.arraycopy(buffer, Constants.PAYLOAD_OFFSET, payload, 0, payloadLength);
-        parseResponse(cmd, payloadLength, payload);
-    }
+        Spinner spinner = (Spinner) findViewById(R.id.sensor_interval);
+        if (spinner != null) {
+            spinner.setEnabled(challengePassed);
+        }
 
-    /** RAW I/O of attached mod device is ready to use */
-    public void onRawInterfaceReady() {
-        /**
-         *  Personality has the RAW interface, query the information data via RAW command, the data
-         *  will send back from MDK with flag TEMP_RAW_COMMAND_INFO and TEMP_RAW_COMMAND_CHALLENGE.
-         */
-        new Handler().postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                personality.getRaw().executeRaw(Constants.RAW_CMD_INFO);
-            }
-        }, 500);
-    }
-
-    /** Handle the IO issue when write / read */
-    public void onIOException() {
+        Button bClear = (Button) findViewById(R.id.status_clear_history);
+        if (bClear != null) {
+            bClear.setEnabled(challengePassed);
+        }
     }
 
     /*
@@ -578,167 +513,49 @@ public class MainActivity extends Activity implements View.OnClickListener {
                 RAW_PERMISSION_REQUEST_CODE);
     }
 
-    /** Handle permission request result */
+
+    public void onTemperatureData(double temp) {
+        /** Draw temperature value to line chart */
+        count++;
+        Line line = chart.getLineChartData().getLines().get(0);
+        if (null != line) {
+            if (count > Constants.MAX_SAMPLING_SUM
+                    && line.getValues() != null
+                    && line.getValues().size() > 0) {
+                line.getValues().remove(0);
+            }
+
+            line.getValues().add(new PointValue(count, (float) temp));
+            chart.animationDataUpdate(1);
+
+            if (temp * 1.01f > maxTop) {
+                maxTop = (float) temp * 1.01f;
+            }
+            if (temp * 0.99f < minTop) {
+                minTop = (float) temp * 0.99f;
+            }
+            viewPort = chart.getMaximumViewport();
+            viewPort.top = maxTop; //max value
+            viewPort.bottom = minTop;  //min value
+            chart.setMaximumViewport(viewPort);
+            chart.setCurrentViewport(viewPort);
+        }
+    }
+
+    /**
+     * Handle permission request result
+     */
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         if (requestCode == RAW_PERMISSION_REQUEST_CODE && grantResults.length > 0) {
             if (grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                if (null != personality) {
+                if (null != sensor) {
                     /** Permission grant, try to check RAW I/O of mod device */
-                    personality.getRaw().checkRawInterface();
+                    sensor.resume();
                 }
             } else {
                 // TODO: user declined for RAW accessing permission.
                 // You may need pop up a description dialog or other prompts to explain
                 // the app cannot work without the permission granted.
-            }
-        }
-    }
-
-    /** Parse the data from mod device */
-    private void parseResponse(int cmd, int size, byte[] payload) {
-        if (cmd == Constants.TEMP_RAW_COMMAND_INFO) {
-            /** Got information data from personality board */
-
-            /**
-             * Checking the size of payload before parse it to ensure sufficient bytes.
-             * Payload array shall at least include the command head data, and exactly
-             * same as expected size.
-             */
-            if (payload == null
-                    || payload.length != size
-                    || payload.length < Constants.CMD_INFO_HEAD_SIZE) {
-                return;
-            }
-
-            int version = payload[Constants.CMD_INFO_VERSION_OFFSET];
-            int reserved = payload[Constants.CMD_INFO_RESERVED_OFFSET];
-            int latencyLow = payload[Constants.CMD_INFO_LATENCYLOW_OFFSET] & 0xFF;
-            int latencyHigh = payload[Constants.CMD_INFO_LATENCYHIGH_OFFSET] & 0xFF;
-            int max_latency = latencyHigh << 8 | latencyLow;
-
-            StringBuilder name = new StringBuilder();
-            for (int i = Constants.CMD_INFO_NAME_OFFSET; i < size - Constants.CMD_INFO_HEAD_SIZE; i++) {
-                if (payload[i] != 0) {
-                    name.append((char) payload[i]);
-                } else {
-                    break;
-                }
-            }
-            Log.i(Constants.TAG, "command: " + cmd
-                    + " size: " + size
-                    + " version: " + version
-                    + " reserved: " + reserved
-                    + " name: " + name.toString()
-                    + " latency: " + max_latency);
-        } else if (cmd == Constants.TEMP_RAW_COMMAND_DATA) {
-            /** Got sensor data from personality board */
-
-            /** Checking the size of payload before parse it to ensure sufficient bytes. */
-            if (payload == null
-                    || payload.length != size
-                    || payload.length != Constants.CMD_DATA_SIZE) {
-                return;
-            }
-
-            int dataLow = payload[Constants.CMD_DATA_LOWDATA_OFFSET] & 0xFF;
-            int dataHigh = payload[Constants.CMD_DATA_HIGHDATA_OFFSET] & 0xFF;
-
-            /** The raw temperature sensor data */
-            int data = dataHigh << 8 | dataLow;
-
-            /** The temperature */
-            double temp = ((0 - 0.03) * data) + 128;
-
-            /** Draw temperature value to line chart */
-            count++;
-            Line line = chart.getLineChartData().getLines().get(0);
-            if (null != line) {
-                if (count > Constants.MAX_SAMPLING_SUM
-                        && line.getValues() != null
-                        && line.getValues().size() > 0) {
-                    line.getValues().remove(0);
-                }
-
-                line.getValues().add(new PointValue(count, (float) temp));
-                chart.animationDataUpdate(1);
-
-                if (temp * 1.01f > maxTop) {
-                    maxTop = (float) temp * 1.01f;
-                }
-                if (temp * 0.99f < minTop) {
-                    minTop = (float) temp * 0.99f;
-                }
-                viewPort = chart.getMaximumViewport();
-                viewPort.top = maxTop; //max value
-                viewPort.bottom = minTop;  //min value
-                chart.setMaximumViewport(viewPort);
-                chart.setCurrentViewport(viewPort);
-            }
-        } else if (cmd == Constants.TEMP_RAW_COMMAND_CHALLENGE) {
-            /** Got CHALLENGE command from personality board */
-
-            /** Checking the size of payload before parse it to ensure sufficient bytes. */
-            if (payload == null
-                    || payload.length != size
-                    || payload.length != Constants.CMD_CHALLENGE_SIZE) {
-                return;
-            }
-
-            byte[] resp = Constants.getAESECBDecryptor(Constants.AES_ECB_KEY, payload);
-            if (resp != null) {
-                /** Got decoded CHALLENGE payload */
-                ByteBuffer buffer = ByteBuffer.wrap(resp);
-                buffer.order(ByteOrder.LITTLE_ENDIAN); // lsb -> msb
-                long littleLong = buffer.getLong();
-                littleLong += Constants.CHALLENGE_ADDATION;
-
-                ByteBuffer buf = ByteBuffer.allocate(Long.SIZE / Byte.SIZE).order(ByteOrder.LITTLE_ENDIAN);
-                buf.putLong(littleLong);
-                byte[] respData = buf.array();
-
-                /** Send challenge response back to mod device */
-                byte[] aes = Constants.getAESECBEncryptor(Constants.AES_ECB_KEY, respData);
-                if (aes != null) {
-                    byte[] challenge = new byte[aes.length + 2];
-                    challenge[0] = Constants.TEMP_RAW_COMMAND_CHLGE_RESP;
-                    challenge[1] = (byte) aes.length;
-                    System.arraycopy(aes, 0, challenge, 2, aes.length);
-                    personality.getRaw().executeRaw(challenge);
-                } else {
-                    Log.e(Constants.TAG, "AES encrypt failed.");
-                }
-            } else {
-                Log.e(Constants.TAG, "AES decrypt failed.");
-            }
-        } else if (cmd == Constants.TEMP_RAW_COMMAND_CHLGE_RESP) {
-            /** Get challenge command response */
-
-            /** Checking the size of payload before parse it to ensure sufficient bytes. */
-            if (payload == null
-                    || payload.length != size
-                    || payload.length != Constants.CMD_CHLGE_RESP_SIZE) {
-                return;
-            }
-
-            /**
-             * Check first byte, response from MDK Sensor Card shall be 0
-             * if challenge passed
-             */
-            boolean challengePassed = payload[Constants.CMD_CHLGE_RESP_OFFSET] == 0;
-
-            Switch switcher = (Switch) findViewById(R.id.sensor_switch);
-            if (switcher != null) {
-                switcher.setEnabled(challengePassed);
-            }
-
-            Spinner spinner = (Spinner) findViewById(R.id.sensor_interval);
-            if (spinner != null ) {
-                spinner.setEnabled(challengePassed);
-            }
-
-            Button bClear = (Button) findViewById(R.id.status_clear_history);
-            if (bClear != null ) {
-                bClear.setEnabled(challengePassed);
             }
         }
     }
